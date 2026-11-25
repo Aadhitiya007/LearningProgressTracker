@@ -1,25 +1,25 @@
+"""Stateless Flask API for Learning Progress Tracker."""
+
+import json
 import os
-import io
 import tempfile
 from datetime import datetime
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
+from werkzeug.utils import secure_filename
 
-
-from tracker import (
-    load_csv,
-    calculate_summary,
-    build_excel,
+import config
+from core.parser import load_csv, calculate_summary, find_overdue_records
+from core.exporter import build_excel
+from core.integrations import (
     upload_to_snowflake,
     trigger_power_automate,
-    create_save_folder,
-    ONEDRIVE_FOLDER,
-    REPORT_NAME,
+    fetch_from_snowflake,
+    list_snowflake_options,
 )
 
 app = Flask(__name__, static_folder=".", static_url_path="")
-CORS(app)  
-
+CORS(app)
 
 
 @app.route("/")
@@ -27,136 +27,161 @@ def index():
     return send_from_directory(".", "index.html")
 
 
-
 @app.route("/api/health")
 def health():
     return jsonify({"status": "ok", "time": datetime.now().isoformat()})
 
 
-
 @app.route("/api/process", methods=["POST"])
 def process():
-    
-
     if "file" not in request.files:
-        return jsonify({"success": False,
-                        "error": "No file uploaded."}), 400
+        return jsonify({"success": False, "error": "No file uploaded."}), 400
 
     uploaded = request.files["file"]
-    if not uploaded.filename.lower().endswith(".csv"):
-        return jsonify({"success": False,
-                        "error": "Please upload a .csv file."}), 400
+    if not uploaded.filename or not uploaded.filename.lower().endswith(".csv"):
+        return jsonify({"success": False, "error": "Please upload a .csv file."}), 400
 
-    
-    run_snowflake  = request.form.get("snowflake",  "true").lower() == "true"
-    run_automate   = request.form.get("automate",   "true").lower() == "true"
-    run_excel      = request.form.get("excel",      "true").lower() == "true"
+    run_snowflake = request.form.get("snowflake", "true").lower() == "true"
+    run_automate = request.form.get("automate", "true").lower() == "true"
+    run_excel = request.form.get("excel", "true").lower() == "true"
 
-    
-    with tempfile.NamedTemporaryFile(suffix=".csv", delete=False,
-                                     mode="wb") as tmp:
+    sf_wh = request.form.get("warehouse", "").strip()
+    sf_db = request.form.get("database", "").strip()
+    sf_sc = request.form.get("schema", "").strip()
+    sf_tbl = request.form.get("table", "").strip()
+
+    expected_columns = None
+    raw_expected = request.form.get("expected_columns", "").strip()
+    if raw_expected:
+        try:
+            parsed_cols = json.loads(raw_expected)
+            if isinstance(parsed_cols, list):
+                expected_columns = parsed_cols
+        except json.JSONDecodeError:
+            return jsonify({"success": False, "error": "Invalid expected_columns JSON."}), 400
+
+    with tempfile.NamedTemporaryFile(suffix=".csv", delete=False, mode="wb") as tmp:
         uploaded.save(tmp)
         tmp_path = tmp.name
 
-    steps = []  
-
+    steps = []
     try:
-       
-        import pandas as pd
-
-        
-        import tracker as _t
-        _orig = _t.INPUT_CSV
-        _t.INPUT_CSV = tmp_path
-
-        df = load_csv()
-        _t.INPUT_CSV = _orig      
-
+        df = load_csv(tmp_path, expected_columns=expected_columns)
         summary = calculate_summary(df)
+        rows = df.fillna("").to_dict(orient="records")
+        overdue = find_overdue_records(rows)
 
-        
-        excel_path = None
-        excel_step = {"name": "Excel / OneDrive", "status": "skipped"}
+        excel_filename = ""
+        excel_path = ""
         if run_excel:
             try:
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                filename  = f"{REPORT_NAME}_{timestamp}.xlsx"
+                res = build_excel(df, summary)
+                excel_filename = res["filename"]
+                excel_path = res["path"]
+                detail = res["onedrive_path"] or res["path"]
+                steps.append({"name": "Excel / OneDrive", "status": "ok", "detail": detail})
+            except Exception as exc:
+                steps.append({"name": "Excel / OneDrive", "status": "error", "detail": str(exc)})
+        else:
+            steps.append({"name": "Excel / OneDrive", "status": "skipped"})
 
-               
-                if ONEDRIVE_FOLDER and "YourName" not in ONEDRIVE_FOLDER:
-                    os.makedirs(ONEDRIVE_FOLDER, exist_ok=True)
-                    excel_path = os.path.join(ONEDRIVE_FOLDER, filename)
-                else:
-                    excel_path = os.path.join(
-                        os.path.dirname(os.path.abspath(__file__)), filename)
-
-                build_excel(df, summary, excel_path)
-                excel_step = {"name": "Excel / OneDrive",
-                              "status": "ok",
-                              "detail": excel_path}
-            except Exception as e:
-                excel_step = {"name": "Excel / OneDrive",
-                              "status": "error",
-                              "detail": str(e)}
-        steps.append(excel_step)
-
-        
-        sf_step = {"name": "Snowflake", "status": "skipped"}
         if run_snowflake:
-            try:
-                upload_to_snowflake(df)
-                sf_step = {"name": "Snowflake", "status": "ok"}
-            except SystemExit:
-                sf_step = {"name": "Snowflake", "status": "skipped",
-                           "detail": "Credentials not configured"}
-            except Exception as e:
-                sf_step = {"name": "Snowflake", "status": "error",
-                           "detail": str(e)}
-        steps.append(sf_step)
+            steps.append(upload_to_snowflake(df, warehouse=sf_wh, database=sf_db, schema=sf_sc, table=sf_tbl))
+        else:
+            steps.append({"name": "Snowflake", "status": "skipped"})
 
-        
-        pa_step = {"name": "Power Automate", "status": "skipped"}
-        if run_automate and excel_path:
-            try:
-                trigger_power_automate(summary, excel_path)
-                pa_step = {"name": "Power Automate", "status": "ok"}
-            except SystemExit:
-                pa_step = {"name": "Power Automate", "status": "skipped",
-                           "detail": "URL or email not configured"}
-            except Exception as e:
-                pa_step = {"name": "Power Automate", "status": "error",
-                           "detail": str(e)}
-        steps.append(pa_step)
-
-       
-        rows = df.fillna("").to_dict(orient="records")
+        if run_automate:
+            steps.append(trigger_power_automate(summary, excel_path, overdue))
+        else:
+            steps.append({"name": "Power Automate", "status": "skipped"})
 
         return jsonify({
-            "success":  True,
-            "summary":  summary,
-            "rows":     rows,
-            "steps":    steps,
-            "excel":    excel_path or "",
-            "count":    len(df),
+            "success": True,
+            "summary": summary,
+            "rows": rows,
+            "overdue": overdue,
+            "steps": steps,
+            "excel_file": excel_filename,
+            "count": len(rows),
         })
 
-    except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
-
+    except ValueError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 400
+    except Exception as exc:
+        return jsonify({"success": False, "error": str(exc)}), 500
     finally:
         try:
             os.unlink(tmp_path)
-        except Exception:
+        except OSError:
             pass
 
 
+@app.route("/api/snowflake/options", methods=["GET"])
+def api_snowflake_options():
+    database = request.args.get("database", "").strip()
+    schema = request.args.get("schema", "").strip()
+    try:
+        opts = list_snowflake_options(database=database, schema=schema)
+        return jsonify({"success": True, **opts})
+    except ValueError as exc:
+        return jsonify({
+            "success": False,
+            "error": str(exc),
+            "defaults": {
+                "warehouse": config.SNOWFLAKE_WAREHOUSE,
+                "database": config.SNOWFLAKE_DATABASE,
+                "schema": config.SNOWFLAKE_SCHEMA,
+                "table": config.SNOWFLAKE_TABLE,
+            },
+        }), 400
+    except Exception as exc:
+        return jsonify({"success": False, "error": str(exc)}), 500
 
-@app.route("/api/download/<path:filename>")
+
+@app.route("/api/snowflake/pull", methods=["GET", "POST"])
+def api_snowflake_pull():
+    payload = request.get_json(silent=True) or {}
+    warehouse = (payload.get("warehouse") or request.args.get("warehouse") or "").strip()
+    database = (payload.get("database") or request.args.get("database") or "").strip()
+    schema = (payload.get("schema") or request.args.get("schema") or "").strip()
+    table = (payload.get("table") or request.args.get("table") or "").strip()
+    expected_columns = payload.get("expected_columns")
+
+    try:
+        df = fetch_from_snowflake(
+            warehouse=warehouse,
+            database=database,
+            schema=schema,
+            table=table,
+            expected_columns=expected_columns,
+        )
+        if df.empty:
+            return jsonify({"success": False, "error": "No records found in selected Snowflake table."}), 404
+        summary = calculate_summary(df)
+        rows = df.fillna("").to_dict(orient="records")
+        overdue = find_overdue_records(rows)
+        return jsonify({
+            "success": True,
+            "summary": summary,
+            "rows": rows,
+            "overdue": overdue,
+            "count": len(rows),
+        })
+    except ValueError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 400
+    except Exception as exc:
+        return jsonify({"success": False, "error": str(exc)}), 500
+
+
+@app.route("/api/download/<filename>")
 def download(filename):
-    directory = os.path.dirname(os.path.abspath(filename))
-    base      = os.path.basename(filename)
-    return send_from_directory(directory, base, as_attachment=True)
-
+    safe_name = secure_filename(filename)
+    if not safe_name or not safe_name.lower().endswith(".xlsx"):
+        return jsonify({"success": False, "error": "Invalid filename."}), 400
+    full_path = os.path.join(config.REPORTS_DIR, safe_name)
+    if not os.path.isfile(full_path):
+        return jsonify({"success": False, "error": "Report not found."}), 404
+    return send_from_directory(config.REPORTS_DIR, safe_name, as_attachment=True)
 
 
 if __name__ == "__main__":
@@ -164,4 +189,4 @@ if __name__ == "__main__":
     print("  Learning Tracker — Flask API")
     print("  Open  http://localhost:5000  in your browser")
     print("=" * 58 + "\n")
-    app.run(debug=True, port=5000)
+    app.run(debug=False, port=5000)
