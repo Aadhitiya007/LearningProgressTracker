@@ -1,5 +1,4 @@
 let apiConnected = false;
-let latestExcelFile = "";
 
 function getApiBase(){
   if(window.location.protocol.startsWith("http")) return window.location.origin;
@@ -54,9 +53,6 @@ async function sendToApi(file){
       showErr("Backend Error", data.error || "Unknown error from backend.");
       return null;
     }
-
-    latestExcelFile = data.excel_file || "";
-    document.getElementById("btnServerExcel").style.display = latestExcelFile ? "inline-block" : "none";
 
     showOk(`Processed ${data.count} records.`);
     showOverdue(data.overdue || []);
@@ -137,19 +133,12 @@ async function pullFromSnowflake(){
     }
     allData = data.rows;
     filteredData = [...allData];
-    latestExcelFile = "";
-    document.getElementById("btnServerExcel").style.display = "none";
     showOk(`Pulled ${data.count} records from Snowflake.`);
     showOverdue(data.overdue || []);
     render();
   }catch(e){
     showErr("Snowflake Pull Error", e.message);
   }
-}
-
-function downloadServerExcel(){
-  if(!latestExcelFile){ showToast("No server report available."); return; }
-  window.location.href = getApiBase()+"/api/download/"+encodeURIComponent(latestExcelFile);
 }
 
 const COL_MAP = {
@@ -291,8 +280,6 @@ async function go(file){
       const res=parseCSV(e.target.result);
       if(res.error){showErr("CSV Error",res.error);return;}
       allData=res.data;filteredData=[...allData];
-      latestExcelFile = "";
-      document.getElementById("btnServerExcel").style.display = "none";
       showOk("Loaded "+allData.length+" records locally.");
       render();
     }catch(ex){showErr("Error",ex.message);}
@@ -480,8 +467,33 @@ function getReportData(){
   return{COLS,STATUSES,total,cert,inp,ns,ex,avg,rate,date};
 }
 
-function exportExcel(){
+async function exportExcel(){
   if(!filteredData.length){showToast("No data loaded yet.");return;}
+
+  if(apiConnected){
+    try{
+      showToast("Generating colorful Excel report with charts...");
+      const resp = await fetch(getApiBase()+"/api/export/excel", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({rows: filteredData}),
+      });
+      if(resp.ok){
+        const blob = await resp.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = "Learning_Progress_Report_"+new Date().toISOString().slice(0,10)+".xlsx";
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        showToast("Styled Excel report downloaded.");
+        return;
+      }
+    }catch(e){}
+  }
+
   if(typeof XLSX==="undefined"){showToast("Excel library not loaded.");exportReportCSV();return;}
   try{
     const{COLS,STATUSES,total,cert,inp,ns,ex,avg,rate,date}=getReportData();
@@ -509,25 +521,36 @@ function exportReportCSV(){
 
 const TEMPLATE=[
   ["EMP ID","EMP NAME","SKILL ASSIGNED","PROFICIENCY","TARGET DATE","CURRENT STATUS","LEARNING START DATE","E-LEARNING COMPLETION %","VILT COMPLETION %","LEARNING COMPLETION DATE","BEST SCORE","CERTIFIED DATE","EXEMPTED STATUS"],
-  ["EMP001","Anitha","AWS Cloud Practitioner","Advanced","2024-04-10","Completed","2024-01-10",100,100,"2024-04-05",92,"2024-04-08","No"],
-  ["EMP002","Ravi Kumar","Oracle SQL","Intermediate","2024-05-01","In Progress","2024-02-01",50,40,"","","","No"],
-  ["EMP003","Meena","Azure Fundamentals","Intermediate","2024-05-15","In Progress","2024-02-15",65,55,"","","","No"],
-  ["EMP004","John","Python Certification","Beginner","2024-06-01","Not Started","","0",0,"","","","No"],
-  ["EMP005","Priya","AWS Solutions Architect","Advanced","2024-06-20","In Progress","2024-01-20",80,75,"","","","No"],
-  ["EMP006","Suresh","Microsoft Azure","Intermediate","2024-07-10","In Progress","2024-02-10",30,20,"","","","No"],
-  ["EMP007","Kavitha","Google Cloud Associate","Beginner","2024-07-05","Not Started","","0",0,"","","","No"],
-  ["EMP008","Arjun","Oracle DBA","Advanced","2024-05-15","Completed","2024-01-15",100,100,"2024-05-10",88,"2024-05-12","No"],
-  ["EMP009","Divya","AWS Developer","Advanced","2024-06-20","In Progress","2024-02-20",90,85,"","","","No"],
-  ["EMP010","Ramesh","Cisco CCNA","Beginner","2024-08-10","Not Started","","0",0,"","","","No"],
-  ["EMP011","Lakshmi","Salesforce Admin","Intermediate","2024-04-25","Completed","2024-01-25",100,100,"2024-04-20",95,"2024-04-22","No"],
-  ["EMP012","Vikram","Python Data Science","Intermediate","2024-06-28","In Progress","2024-02-28",45,30,"","","","No"],
-  ["EMP013","Nisha","SAP Basics","Beginner","2024-07-01","Exempted","","","","","","","Yes - Already Certified"],
+  ["EMP001","Anitha Sharma","AWS Cloud Practitioner","Advanced","2026-06-25","Completed","2026-05-10",100,100,"2026-06-18",92,"2026-06-20","No"],
+  ["EMP002","Ravi Kumar","Oracle SQL Database","Intermediate","2026-07-15","Completed","2026-06-01",100,100,"2026-07-10",86,"2026-07-12","No"],
+  ["EMP003","Meena Patel","Azure Fundamentals","Intermediate","2026-07-25","Completed","2026-06-15",100,100,"2026-07-20",89,"2026-07-22","No"],
+  ["EMP004","John Doe","Python Programming","Beginner","2026-08-20","Completed","2026-07-05",100,100,"2026-08-14",84,"2026-08-16","No"],
+  ["EMP005","Priya Sundaram","AWS Solutions Architect","Advanced","2026-08-30","Completed","2026-07-12",100,100,"2026-08-25",94,"2026-08-27","No"],
+  ["EMP006","Suresh Reddy","Microsoft Azure Admin","Intermediate","2026-09-20","Completed","2026-08-01",100,100,"2026-09-15",88,"2026-09-18","No"],
+  ["EMP007","Kavitha Nair","Google Cloud Associate","Beginner","2026-09-28","Completed","2026-08-10",100,100,"2026-09-24",81,"2026-09-26","No"],
+  ["EMP008","Arjun Verma","Oracle Database Admin","Advanced","2026-10-15","Completed","2026-09-01",100,100,"2026-10-10",91,"2026-10-12","No"],
+  ["EMP009","Divya Krishnan","AWS Certified Developer","Advanced","2026-10-25","Completed","2026-09-05",100,100,"2026-10-20",95,"2026-10-22","No"],
+  ["EMP010","Ramesh Gupta","Cisco CCNA Networking","Beginner","2026-11-18","Completed","2026-10-01",100,100,"2026-11-12",83,"2026-11-15","No"],
+  ["EMP011","Lakshmi Iyer","Salesforce Administrator","Intermediate","2026-11-22","Completed","2026-10-05",100,100,"2026-11-18",90,"2026-11-20","No"],
+  ["EMP012","Vikram Singh","Python Data Science","Intermediate","2026-11-20","In Progress","2026-10-10",45,30,"",0,"","No"],
+  ["EMP013","Nisha Agarwal","SAP Basics","Beginner","2026-10-01","Exempted","","","","","","","Yes - Already Certified"],
+  ["EMP014","Karan Mehta","Docker & Kubernetes","Advanced","2026-11-10","In Progress","2026-09-15",35,20,"",0,"","No"],
+  ["EMP015","Sneha Roy","React Frontend Dev","Intermediate","2026-12-05","In Progress","2026-10-20",75,65,"",0,"","No"],
+  ["EMP016","Deepak Joshi","AWS Cloud Practitioner","Beginner","2026-11-15","Not Started","",0,0,"",0,"","No"],
+  ["EMP017","Pooja Menon","Python Data Science","Intermediate","2026-12-12","In Progress","2026-10-25",80,75,"",0,"","No"],
+  ["EMP018","Nikhil Sharma","Docker & Kubernetes","Intermediate","2026-12-20","In Progress","2026-11-01",60,55,"",0,"","No"],
+  ["EMP019","Aarti Desai","Azure Fundamentals","Beginner","2026-11-28","Not Started","",0,0,"",0,"","No"],
+  ["EMP020","Sanjay Kulkarni","React Frontend Dev","Advanced","2026-12-18","In Progress","2026-11-02",85,80,"",0,"","No"],
+  ["EMP021","Tanvi Kapoor","AWS Solutions Architect","Advanced","2026-11-29","In Progress","2026-10-15",40,35,"",0,"","No"],
+  ["EMP022","Manish Tiwari","Oracle SQL Database","Beginner","2026-12-30","Not Started","",0,0,"",0,"","No"],
+  ["EMP023","Swati Bansal","Google Cloud Associate","Intermediate","2026-12-22","In Progress","2026-11-05",70,60,"",0,"","No"],
+  ["EMP024","Rahul Verma","Cisco CCNA Networking","Beginner","2026-11-12","Not Started","",0,0,"",0,"","No"],
 ];
 function dlTemplate(){const csv=TEMPLATE.map(r=>r.join(",")).join("\n");const a=document.createElement("a");a.href="data:text/csv;charset=utf-8,"+encodeURIComponent(csv);a.download="learning_tracker_template.csv";a.click();showToast("Template downloaded.");}
 function loadSample(){
   const[hdr,...rows]=TEMPLATE;
   allData=rows.map(r=>{const obj={};hdr.forEach((h,i)=>obj[h]=String(r[i]||""));obj["E-LEARNING COMPLETION %"]=clampPct(obj["E-LEARNING COMPLETION %"]);obj["VILT COMPLETION %"]=clampPct(obj["VILT COMPLETION %"]);obj["BEST SCORE"]=parseFloat(obj["BEST SCORE"])||0;const el2=obj["E-LEARNING COMPLETION %"],vilt2=obj["VILT COMPLETION %"],sc2=obj["BEST SCORE"],exSt2=(obj["EXEMPTED STATUS"]||"").toLowerCase();if(exSt2.includes("yes")||exSt2.includes("exempt"))obj["CURRENT STATUS"]="Exempted";else if(sc2>50||(el2>=100&&vilt2>=100))obj["CURRENT STATUS"]="Completed";else if(el2===0&&vilt2===0&&sc2===0)obj["CURRENT STATUS"]="Not Started";else obj["CURRENT STATUS"]="In Progress";const p=obj["PROFICIENCY"].toLowerCase();if(p.includes("adv"))obj["PROFICIENCY"]="Advanced";else if(p.includes("int"))obj["PROFICIENCY"]="Intermediate";else if(p.includes("beg")||p.includes("nov"))obj["PROFICIENCY"]="Beginner";return obj;});
-  filteredData=[...allData];latestExcelFile="";document.getElementById("btnServerExcel").style.display="none";hideErr();hideOverdue();showOk("Sample data loaded ("+allData.length+" records).");render();
+  filteredData=[...allData];hideErr();hideOverdue();showOk("Sample data loaded ("+allData.length+" records).");render();
 }
 
 function showOverdue(list){
@@ -546,3 +569,243 @@ function showOk(m){document.getElementById("okMsg").textContent=m;document.getEl
 function hideOk(){document.getElementById("okBar").style.display="none";}
 let tt;
 function showToast(m){const el=document.getElementById("toast");el.textContent=m;el.classList.add("show");clearTimeout(tt);tt=setTimeout(()=>el.classList.remove("show"),3000);}
+
+// =========================================================================
+// Tabs, Secondary DB Link, ML Analysis & Customizable Dashboard
+// =========================================================================
+let lastAnalysis = null;
+let growthChartInst = null;
+let gapChartInst = null;
+const DASH_PREF_KEY = "lpt_dash_prefs";
+
+function switchTab(tab){
+  const isOver = tab === "overview";
+  document.getElementById("viewOverview").style.display = isOver ? "block" : "none";
+  document.getElementById("viewAnalysis").style.display = isOver ? "none" : "block";
+  document.getElementById("tabBtnOverview").classList.toggle("active", isOver);
+  document.getElementById("tabBtnAnalysis").classList.toggle("active", !isOver);
+  if(!isOver){
+    loadDashPrefs();
+    if(filteredData.length && !lastAnalysis && apiConnected){
+      runMlAnalysis();
+    }
+  }
+}
+
+function togglePanel(id){
+  const el = document.getElementById(id);
+  el.style.display = el.style.display === "none" ? "block" : "none";
+}
+
+function getDashPrefs(){
+  try{
+    const saved = localStorage.getItem(DASH_PREF_KEY);
+    if(saved) return JSON.parse(saved);
+  }catch(e){}
+  return {showKpis:true, showGrowth:true, showGaps:true, showTrain:true, growthType:"line", gapType:"bar"};
+}
+
+function loadDashPrefs(){
+  const p = getDashPrefs();
+  document.getElementById("optShowKpis").checked = p.showKpis !== false;
+  document.getElementById("optShowGrowth").checked = p.showGrowth !== false;
+  document.getElementById("optShowGaps").checked = p.showGaps !== false;
+  document.getElementById("optShowTrain").checked = p.showTrain !== false;
+  document.getElementById("optGrowthType").value = p.growthType || "line";
+  document.getElementById("optGapType").value = p.gapType || "bar";
+}
+
+function saveDashPrefs(){
+  const p = {
+    showKpis: document.getElementById("optShowKpis").checked,
+    showGrowth: document.getElementById("optShowGrowth").checked,
+    showGaps: document.getElementById("optShowGaps").checked,
+    showTrain: document.getElementById("optShowTrain").checked,
+    growthType: document.getElementById("optGrowthType").value,
+    gapType: document.getElementById("optGapType").value,
+  };
+  localStorage.setItem(DASH_PREF_KEY, JSON.stringify(p));
+  if(lastAnalysis) renderAnalysis(lastAnalysis);
+}
+
+function useSampleCompanyDb(){
+  document.getElementById("secDbUrl").value = "sqlite:///company_hr.db";
+  document.getElementById("secDbSchema").value = "";
+  document.getElementById("secDbTable").value = "hr_employees";
+  document.getElementById("secJoinLeft").value = "EMP ID";
+  document.getElementById("secJoinRight").value = "employee_id";
+  fetchSecondaryTables();
+}
+
+async function fetchSecondaryTables(){
+  const dbUrl = (document.getElementById("secDbUrl").value || "").trim();
+  const schema = (document.getElementById("secDbSchema").value || "").trim();
+  if(!dbUrl){ showToast("Enter a Database URL first."); return; }
+  try{
+    const resp = await fetch(getApiBase()+"/api/connectors/tables", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({db_url: dbUrl, schema}),
+    });
+    const data = await resp.json();
+    if(!data.success){ showToast(data.error || "Failed to list tables."); return; }
+    fillDatalist("secDbTableList", data.tables);
+    showToast(`Found ${data.tables.length} table(s).`);
+  }catch(e){
+    showToast("Connection error: " + e.message);
+  }
+}
+
+async function loadSampleAndAnalyze(){
+  loadSample();
+  document.getElementById("secDbUrl").value = "sqlite:///company_hr.db";
+  document.getElementById("secDbSchema").value = "";
+  document.getElementById("secDbTable").value = "hr_employees";
+  document.getElementById("secJoinLeft").value = "EMP ID";
+  document.getElementById("secJoinRight").value = "employee_id";
+  await runMlAnalysis();
+}
+
+function showMlErr(msg){
+  const box = document.getElementById("mlErrBox");
+  document.getElementById("mlErrMsg").textContent = msg;
+  box.style.display = "block";
+}
+function hideMlErr(){
+  document.getElementById("mlErrBox").style.display = "none";
+}
+
+async function runMlAnalysis(){
+  hideMlErr();
+  if(!filteredData.length){
+    showMlErr("No data loaded yet. Click 'Load Sample Data & Analyze' or upload a CSV in Overview.");
+    return;
+  }
+  const payload = {
+    rows: filteredData,
+    db_url: (document.getElementById("secDbUrl").value || "").trim(),
+    schema: (document.getElementById("secDbSchema").value || "").trim(),
+    table: (document.getElementById("secDbTable").value || "").trim(),
+    left_key: (document.getElementById("secJoinLeft").value || "EMP ID").trim(),
+    right_key: (document.getElementById("secJoinRight").value || "").trim(),
+  };
+  showToast("Running ML analysis...");
+  try{
+    const resp = await fetch(getApiBase()+"/api/analysis/run", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(payload),
+    });
+    if(resp.status === 405){
+      showMlErr("Server returned 405 (Method Not Allowed). An older app.py is still running on port 5000 — stop it and restart: .\\.venv\\Scripts\\python.exe app.py");
+      return;
+    }
+    const data = await resp.json();
+    if(!data.success){
+      showMlErr(data.error || "Analysis failed.");
+      return;
+    }
+    apiConnected = true;
+    lastAnalysis = data;
+    renderAnalysis(data);
+    showToast("ML analysis complete.");
+  }catch(e){
+    showMlErr("Could not reach Flask server at " + getApiBase() + ". Make sure you ran: .\\.venv\\Scripts\\python.exe app.py (" + e.message + ")");
+  }
+}
+
+function renderAnalysis(data){
+  const p = getDashPrefs();
+  document.getElementById("mlModelBadge").textContent =
+    `Models: ${data.models.risk_model} | ${data.models.growth_model}`;
+
+  // KPIs
+  const kpiEl = document.getElementById("mlKpis");
+  if(p.showKpis){
+    const k = data.kpis;
+    kpiEl.style.display = "grid";
+    kpiEl.innerHTML = `
+      <div class="summary-card tot"><div class="value">${k.current_readiness_pct}%</div><div class="label">Current Readiness</div></div>
+      <div class="summary-card cert"><div class="value">${k.projected_readiness_pct}%</div><div class="label">Projected (4 Mo)</div></div>
+      <div class="summary-card inp"><div class="value">${k.needs_training_count}</div><div class="label">Need Training</div></div>
+      <div class="summary-card ns"><div class="value">${k.high_risk_count}</div><div class="label">High Risk</div></div>
+    `;
+  } else {
+    kpiEl.style.display = "none";
+  }
+
+  // Charts
+  const chartsEl = document.getElementById("mlCharts");
+  chartsEl.style.display = (p.showGrowth || p.showGaps) ? "grid" : "none";
+  document.getElementById("cardGrowthChart").style.display = p.showGrowth ? "block" : "none";
+  document.getElementById("cardGapChart").style.display = p.showGaps ? "block" : "none";
+
+  if(p.showGrowth && typeof Chart !== "undefined"){
+    if(growthChartInst) growthChartInst.destroy();
+    const g = data.growth;
+    growthChartInst = new Chart(document.getElementById("growthCanvas"), {
+      type: p.growthType || "line",
+      data: {
+        labels: g.labels,
+        datasets: [
+          {label: "Actual Readiness %", data: g.actual, borderColor: "#0d6efd", backgroundColor: "rgba(13,110,253,0.15)", tension: 0.25},
+          {label: "ML Forecast %", data: g.forecast, borderColor: "#198754", backgroundColor: "rgba(25,135,84,0.15)", borderDash: [6, 4], tension: 0.25},
+        ],
+      },
+      options: {responsive: true, maintainAspectRatio: false, scales: {y: {min: 0, max: 100}}},
+    });
+  }
+
+  if(p.showGaps && typeof Chart !== "undefined"){
+    if(gapChartInst) gapChartInst.destroy();
+    const gaps = (data.skill_gaps || []).slice(0, 10);
+    const gapType = p.gapType || "bar";
+    if(gapType === "doughnut"){
+      gapChartInst = new Chart(document.getElementById("gapCanvas"), {
+        type: "doughnut",
+        data: {
+          labels: gaps.map(x => x.skill),
+          datasets: [{label: "Needs Training", data: gaps.map(x => x.needs_training), backgroundColor: ["#dc3545","#fd7e14","#ffc107","#0d6efd","#6f42c1","#20c997","#0dcaf0","#6c757d","#198754","#d63384"]}],
+        },
+        options: {responsive: true, maintainAspectRatio: false},
+      });
+    } else {
+      gapChartInst = new Chart(document.getElementById("gapCanvas"), {
+        type: "bar",
+        data: {
+          labels: gaps.map(x => x.skill),
+          datasets: [
+            {label: "Completed", data: gaps.map(x => x.completed), backgroundColor: "#198754"},
+            {label: "Needs Training", data: gaps.map(x => x.needs_training), backgroundColor: "#dc3545"},
+          ],
+        },
+        options: {responsive: true, maintainAspectRatio: false, scales: {x: {stacked: false}, y: {beginAtZero: true}}},
+      });
+    }
+  }
+
+  // Training Priority Table
+  const trainCard = document.getElementById("cardTrainList");
+  if(p.showTrain){
+    trainCard.style.display = "block";
+    const list = data.training_priority || [];
+    document.getElementById("trainCount").textContent = `${list.length} employee(s) flagged`;
+    document.getElementById("trainBody").innerHTML = list.map((r, i) => {
+      const pCls = r.priority === "High" ? "prio-high" : r.priority === "Medium" ? "prio-med" : "prio-low";
+      return `<tr>
+        <td>${i + 1}</td>
+        <td>${esc(r.emp_id)}</td>
+        <td><strong>${esc(r.emp_name)}</strong></td>
+        <td>${esc(r.skill)}</td>
+        <td>${esc(r.status)}</td>
+        <td>${r.elearning_pct}%</td>
+        <td>${r.vilt_pct}%</td>
+        <td><strong>${r.risk_score}%</strong></td>
+        <td><span class="status-pill ${pCls}">${r.priority}</span></td>
+        <td>${esc(r.reason)}</td>
+      </tr>`;
+    }).join("");
+  } else {
+    trainCard.style.display = "none";
+  }
+}

@@ -4,7 +4,8 @@ import json
 import os
 import tempfile
 from datetime import datetime
-from flask import Flask, request, jsonify, send_from_directory
+import pandas as pd
+from flask import Flask, request, jsonify, send_from_directory, send_file
 from flask_cors import CORS
 from werkzeug.utils import secure_filename
 
@@ -17,6 +18,8 @@ from core.integrations import (
     fetch_from_snowflake,
     list_snowflake_options,
 )
+from core.connectors import list_tables, fetch_table, join_with_learning_data
+from core.ml_engine import run_full_analysis
 
 app = Flask(__name__, static_folder=".", static_url_path="")
 CORS(app)
@@ -169,6 +172,70 @@ def api_snowflake_pull():
         })
     except ValueError as exc:
         return jsonify({"success": False, "error": str(exc)}), 400
+    except Exception as exc:
+        return jsonify({"success": False, "error": str(exc)}), 500
+
+
+@app.route("/api/connectors/tables", methods=["POST"])
+def api_connector_tables():
+    payload = request.get_json(silent=True) or {}
+    db_url = (payload.get("db_url") or "").strip()
+    schema = (payload.get("schema") or "").strip()
+    try:
+        tables = list_tables(db_url, schema=schema)
+        return jsonify({"success": True, "tables": tables})
+    except ValueError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 400
+    except Exception as exc:
+        return jsonify({"success": False, "error": str(exc)}), 500
+
+
+@app.route("/api/analysis/run", methods=["POST"])
+def api_analysis_run():
+    payload = request.get_json(silent=True) or {}
+    rows = payload.get("rows") or []
+    if not rows:
+        return jsonify({"success": False, "error": "No learning data rows provided."}), 400
+
+    db_url = (payload.get("db_url") or "").strip()
+    table_name = (payload.get("table") or "").strip()
+    schema = (payload.get("schema") or "").strip()
+    left_key = (payload.get("left_key") or "EMP ID").strip()
+    right_key = (payload.get("right_key") or "").strip()
+
+    try:
+        df = pd.DataFrame(rows)
+        joined_info = "None (Learning data only)"
+        if db_url and table_name:
+            sec_df = fetch_table(db_url, table_name, schema=schema)
+            df = join_with_learning_data(df, sec_df, left_key=left_key, right_key=right_key)
+            joined_info = f"{table_name} ({len(sec_df)} rows)"
+
+        analysis = run_full_analysis(df)
+        analysis["joined_source"] = joined_info
+        return jsonify({"success": True, **analysis})
+    except ValueError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 400
+    except Exception as exc:
+        return jsonify({"success": False, "error": str(exc)}), 500
+
+
+@app.route("/api/export/excel", methods=["POST"])
+def api_export_excel():
+    payload = request.get_json(silent=True) or {}
+    rows = payload.get("rows") or []
+    if not rows:
+        return jsonify({"success": False, "error": "No rows provided to export."}), 400
+    try:
+        df = pd.DataFrame(rows)
+        summary = calculate_summary(df)
+        res = build_excel(df, summary)
+        return send_file(
+            res["path"],
+            as_attachment=True,
+            download_name=res["filename"],
+            mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
     except Exception as exc:
         return jsonify({"success": False, "error": str(exc)}), 500
 

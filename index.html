@@ -6,6 +6,7 @@
 <title>Learning Progress Tracker</title>
 <link rel="stylesheet" href="style.css"/>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
 </head>
 <body>
 
@@ -20,6 +21,14 @@
 </header>
 
 <div class="container">
+
+  <!-- Simple Navigation Tabs -->
+  <div class="tab-bar">
+    <button class="tab-btn active" id="tabBtnOverview" onclick="switchTab('overview')">Overview</button>
+    <button class="tab-btn" id="tabBtnAnalysis" onclick="switchTab('analysis')">Analysis &amp; Growth (ML)</button>
+  </div>
+
+  <div id="viewOverview">
 
   <!-- Upload Area -->
   <div class="drop-zone" id="drop">
@@ -219,12 +228,146 @@
     <div class="section-header">
       <h2>Progress Report Details</h2>
       <div style="display: flex; gap: 8px;">
-        <button class="btn btn-success btn-sm" id="btnServerExcel" onclick="downloadServerExcel()" style="display:none;">Download Server Excel (.xlsx)</button>
         <button class="btn btn-success btn-sm" onclick="exportExcel()">Export to Excel (.xlsx)</button>
         <button class="btn btn-sm" onclick="exportReportCSV()">Export to CSV (.csv)</button>
       </div>
     </div>
     <div id="rptBody"></div>
+  </div>
+
+  </div><!-- /#viewOverview -->
+
+  <!-- Analysis & ML Growth View -->
+  <div id="viewAnalysis" style="display:none;">
+    <div class="btn-row" style="justify-content:space-between; align-items:center;">
+      <div style="display:flex; gap:8px; flex-wrap:wrap;">
+        <button class="btn btn-primary" onclick="runMlAnalysis()">Run ML Growth &amp; Training Analysis</button>
+        <button class="btn" onclick="loadSampleAndAnalyze()">Load Sample Data &amp; Analyze</button>
+        <button class="btn" onclick="togglePanel('dbLinkCard')">Link Other Database</button>
+        <button class="btn" onclick="togglePanel('customDashCard')">Customize Dashboard</button>
+      </div>
+      <span id="mlModelBadge" style="font-size:12px; color:#666;"></span>
+    </div>
+
+    <!-- Link Secondary Company Database -->
+    <div class="card" id="dbLinkCard" style="display:none;">
+      <div class="drill-header">
+        <div>
+          <span class="card-title" style="margin-bottom:0;">Link Secondary Database (HR / Project / ERP)</span>
+          <span style="font-size:12px; color:#666; margin-left:8px;">Read-only stateless join with Learning Data</span>
+        </div>
+        <button class="btn btn-sm" onclick="togglePanel('dbLinkCard')">Close</button>
+      </div>
+      <div class="sf-grid">
+        <div class="col-map-item" style="grid-column: span 2;">
+          <label for="secDbUrl">Database URL (SQLAlchemy)</label>
+          <input type="text" id="secDbUrl" placeholder="postgresql+psycopg2://user:pass@host:5432/company_db"/>
+        </div>
+        <div class="col-map-item">
+          <label for="secDbSchema">Schema (Optional)</label>
+          <input type="text" id="secDbSchema" placeholder="public"/>
+        </div>
+        <div class="col-map-item">
+          <label for="secDbTable">Table Name</label>
+          <input type="text" id="secDbTable" list="secDbTableList" placeholder="employees"/>
+          <datalist id="secDbTableList"></datalist>
+        </div>
+        <div class="col-map-item">
+          <label for="secJoinLeft">Learning Join Key</label>
+          <input type="text" id="secJoinLeft" value="EMP ID"/>
+        </div>
+        <div class="col-map-item">
+          <label for="secJoinRight">Other DB Join Key (Auto if blank)</label>
+          <input type="text" id="secJoinRight" placeholder="employee_id"/>
+        </div>
+      </div>
+      <div style="display:flex; gap:8px; margin-top:12px; flex-wrap:wrap;">
+        <button class="btn btn-sm" onclick="useSampleCompanyDb()">Use Sample Company DB</button>
+        <button class="btn btn-sm" onclick="fetchSecondaryTables()">Load Tables</button>
+        <button class="btn btn-primary btn-sm" onclick="runMlAnalysis()">Join &amp; Run Analysis</button>
+      </div>
+    </div>
+
+    <!-- Customize Dashboard Panel -->
+    <div class="card" id="customDashCard" style="display:none;">
+      <div class="drill-header">
+        <span class="card-title" style="margin-bottom:0;">Customize Analysis Dashboard</span>
+        <button class="btn btn-sm" onclick="togglePanel('customDashCard')">Close</button>
+      </div>
+      <div class="custom-dash-grid">
+        <label><input type="checkbox" id="optShowKpis" checked onchange="saveDashPrefs()"/> Show Growth KPIs</label>
+        <label><input type="checkbox" id="optShowGrowth" checked onchange="saveDashPrefs()"/> Show Company Growth Graph</label>
+        <label><input type="checkbox" id="optShowGaps" checked onchange="saveDashPrefs()"/> Show Skill Gap Graph</label>
+        <label><input type="checkbox" id="optShowTrain" checked onchange="saveDashPrefs()"/> Show People Needing Training</label>
+        <div style="display:flex; align-items:center; gap:6px;">
+          <label for="optGrowthType" style="font-size:12px; font-weight:600;">Growth Chart:</label>
+          <select id="optGrowthType" onchange="saveDashPrefs()">
+            <option value="line">Line</option>
+            <option value="bar">Bar</option>
+          </select>
+        </div>
+        <div style="display:flex; align-items:center; gap:6px;">
+          <label for="optGapType" style="font-size:12px; font-weight:600;">Skill Gap Chart:</label>
+          <select id="optGapType" onchange="saveDashPrefs()">
+            <option value="bar">Bar</option>
+            <option value="doughnut">Doughnut</option>
+          </select>
+        </div>
+      </div>
+    </div>
+
+    <!-- ML Error Box -->
+    <div class="alert alert-danger" id="mlErrBox">
+      <strong>Analysis Error:</strong> <span id="mlErrMsg"></span>
+    </div>
+
+    <!-- ML KPI Cards -->
+    <div class="summary-grid" id="mlKpis" style="display:none;"></div>
+
+    <!-- Growth & Skill Gap Charts -->
+    <div class="chart-section" id="mlCharts" style="display:none;">
+      <div class="card" id="cardGrowthChart">
+        <div class="card-title">Company Growth &amp; Readiness Forecast (ML)</div>
+        <div style="position:relative; height:260px;">
+          <canvas id="growthCanvas"></canvas>
+        </div>
+      </div>
+      <div class="card" id="cardGapChart">
+        <div class="card-title">Skill Readiness &amp; Training Gap</div>
+        <div style="position:relative; height:260px;">
+          <canvas id="gapCanvas"></canvas>
+        </div>
+      </div>
+    </div>
+
+    <!-- People Who Need Training (ML Ranked) -->
+    <div class="card" id="cardTrainList" style="display:none;">
+      <div class="drill-header">
+        <div>
+          <span class="card-title" style="margin-bottom:0;">Employees Needing Training (ML Risk Ranked)</span>
+          <span id="trainCount" style="font-size:12px; color:#666; margin-left:8px;"></span>
+        </div>
+      </div>
+      <div class="table-responsive">
+        <table>
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>EMP ID</th>
+              <th>Name</th>
+              <th>Skill</th>
+              <th>Status</th>
+              <th>eLearning</th>
+              <th>VILT</th>
+              <th>Risk Score</th>
+              <th>Priority</th>
+              <th>Reason</th>
+            </tr>
+          </thead>
+          <tbody id="trainBody"></tbody>
+        </table>
+      </div>
+    </div>
   </div>
 
 </div>
